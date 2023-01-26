@@ -141,8 +141,10 @@ typedef struct ventoy_windows_data
     grub_uint8_t windows11_bypass_check;
 
     grub_uint32_t auto_install_len;
-    
-    grub_uint8_t reserved[255 - 4];
+
+    grub_uint8_t windows11_bypass_nro;
+
+    grub_uint8_t reserved[255 - 5];
 
     /* auto_intall file buf */
     /* ...... + auto_install_len */
@@ -304,6 +306,7 @@ grub_uint64_t grub_udf_get_last_file_attr_offset
     grub_uint64_t *fe_entry_size_offset
 );
 int ventoy_is_efi_os(void);
+void ventoy_memfile_env_set(const char *prefix, const void *buf, unsigned long long len);
 
 #endif /* __VENTOY_H__ */
 

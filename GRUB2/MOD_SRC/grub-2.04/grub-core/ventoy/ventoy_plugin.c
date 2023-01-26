@@ -35,6 +35,7 @@
 #include <grub/crypto.h>
 #include <grub/time.h>
 #include <grub/font.h>
+#include <grub/video.h>
 #include <grub/ventoy.h>
 #include "ventoy_def.h"
 
@@ -56,12 +57,16 @@ static injection_config *g_injection_head = NULL;
 static auto_memdisk *g_auto_memdisk_head = NULL;
 static image_list *g_image_list_head = NULL;
 static conf_replace *g_conf_replace_head = NULL;
+static VTOY_JSON *g_menu_lang_json = NULL;
 
 static int g_theme_id = 0;
+static int g_theme_res_fit = 0;
 static int g_theme_num = 0;
 static theme_list *g_theme_head = NULL;
 static int g_theme_random = vtoy_theme_random_boot_second;
 static char g_theme_single_file[256];
+static char g_cur_menu_language[32] = {0};
+static char g_push_menu_language[32] = {0};
 
 static int ventoy_plugin_is_parent(const char *pat, int patlen, const char *isopath)
 {
@@ -375,6 +380,18 @@ static int ventoy_plugin_theme_entry(VTOY_JSON *json, const char *isodisk)
     if (g_theme_num > 0)
     {
         vtoy_json_get_int(json->pstChild, "default_file", &g_theme_id);
+        if (g_theme_id == 0)
+        {
+            vtoy_json_get_int(json->pstChild, "resolution_fit", &g_theme_res_fit);
+            if (g_theme_res_fit != 1)
+            {
+                g_theme_res_fit = 0;
+            }
+
+            grub_snprintf(val, sizeof(val), "%d", g_theme_res_fit);
+            ventoy_env_export("vtoy_res_fit", val);
+        }
+        
         if (g_theme_id > g_theme_num || g_theme_id < 0)
         {
             g_theme_id = 0;
@@ -405,19 +422,19 @@ static int ventoy_plugin_theme_entry(VTOY_JSON *json, const char *isodisk)
     value = vtoy_json_get_string_ex(json->pstChild, "ventoy_left");
     if (value)
     {
-        ventoy_env_export("VTLE_LFT", value);
+        ventoy_env_export(ventoy_left_key, value);
     }
     
     value = vtoy_json_get_string_ex(json->pstChild, "ventoy_top");
     if (value)
     {
-        ventoy_env_export("VTLE_TOP", value);
+        ventoy_env_export(ventoy_top_key, value);
     }
     
     value = vtoy_json_get_string_ex(json->pstChild, "ventoy_color");
     if (value)
     {
-        ventoy_env_export("VTLE_CLR", value);
+        ventoy_env_export(ventoy_color_key, value);
     }
 
     node = vtoy_json_find_item(json->pstChild, JSON_TYPE_ARRAY, "fonts");
@@ -3369,7 +3386,7 @@ grub_err_t ventoy_cmd_select_theme_cfg(grub_extcmd_context_t ctxt, int argc, cha
     }
 
     pos += grub_snprintf(buf + pos, bufsize - pos, 
-            "menuentry 'Return to previous menu [Esc]' --class=vtoyret VTOY_RET {\n"
+            "menuentry \"$VTLANG_RETURN_PREVIOUS\" --class=vtoyret VTOY_RET {\n"
                 "echo 'Return ...'\n"
             "}\n");
 
@@ -3379,13 +3396,19 @@ grub_err_t ventoy_cmd_select_theme_cfg(grub_extcmd_context_t ctxt, int argc, cha
     return 0;
 }
 
+extern char g_ventoy_theme_path[256];
+
 grub_err_t ventoy_cmd_set_theme(grub_extcmd_context_t ctxt, int argc, char **args)
 {
     grub_uint32_t i = 0;
     grub_uint32_t mod = 0;
+    grub_uint32_t theme_num = 0;
     theme_list *node = g_theme_head;
     struct grub_datetime datetime;
-    
+    struct grub_video_mode_info info;
+    char buf[64];
+    char **pThemePath = NULL;
+
     (void)argc;
     (void)args;
     (void)ctxt;
@@ -3415,41 +3438,82 @@ grub_err_t ventoy_cmd_set_theme(grub_extcmd_context_t ctxt, int argc, char **arg
         goto end;
     }
 
-    grub_memset(&datetime, 0, sizeof(datetime));
-    grub_get_datetime(&datetime);
-
-    if (g_theme_random == vtoy_theme_random_boot_second)
+    pThemePath = (char **)grub_zalloc(sizeof(char *) * g_theme_num);
+    if (!pThemePath)
     {
-        grub_divmod32((grub_uint32_t)datetime.second, (grub_uint32_t)g_theme_num, &mod);
-    }
-    else if (g_theme_random == vtoy_theme_random_boot_day)
-    {
-        grub_divmod32((grub_uint32_t)datetime.day, (grub_uint32_t)g_theme_num, &mod);
-    }
-    else if (g_theme_random == vtoy_theme_random_boot_month)
-    {
-        grub_divmod32((grub_uint32_t)datetime.month, (grub_uint32_t)g_theme_num, &mod);
+        goto end;
     }
 
-    debug("%04d/%02d/%02d %02d:%02d:%02d radom:%d mod:%d\n",
-          datetime.year, datetime.month, datetime.day,
-          datetime.hour, datetime.minute, datetime.second,
-          g_theme_random, mod);
-
-    for (i = 0; i < mod && node; i++)
+    if (g_theme_res_fit)
     {
-        node = node->next;
+        if (grub_video_get_info(&info) == GRUB_ERR_NONE)
+        {
+            debug("get video info success %ux%u\n", info.width, info.height);
+            grub_snprintf(buf, sizeof(buf), "%ux%u", info.width, info.height);
+            for (node = g_theme_head; node; node = node->next)
+            {
+                if (grub_strstr(node->theme.path, buf))
+                {
+                    pThemePath[theme_num++] = node->theme.path;
+                }
+            }
+        }
     }
 
-    debug("random theme %s\n", node->theme.path);
-    grub_env_set("theme", node->theme.path);
+    if (theme_num == 0)
+    {
+        for (node = g_theme_head; node; node = node->next)
+        {
+            pThemePath[theme_num++] = node->theme.path;
+        }
+    }
+
+    if (theme_num == 1)
+    {
+        mod = 0;
+        debug("Only 1 theme match, no need to random.\n");
+    }
+    else
+    {
+        grub_memset(&datetime, 0, sizeof(datetime));
+        grub_get_datetime(&datetime);
+
+        if (g_theme_random == vtoy_theme_random_boot_second)
+        {
+            grub_divmod32((grub_uint32_t)datetime.second, theme_num, &mod);
+        }
+        else if (g_theme_random == vtoy_theme_random_boot_day)
+        {
+            grub_divmod32((grub_uint32_t)datetime.day, theme_num, &mod);
+        }
+        else if (g_theme_random == vtoy_theme_random_boot_month)
+        {
+            grub_divmod32((grub_uint32_t)datetime.month, theme_num, &mod);
+        }
+
+        debug("%04d/%02d/%02d %02d:%02d:%02d theme_num:%d mod:%d\n",
+              datetime.year, datetime.month, datetime.day,
+              datetime.hour, datetime.minute, datetime.second,
+              theme_num, mod);
+    }
+
+    if (argc > 0 && grub_strcmp(args[0], "switch") == 0)
+    {
+        grub_snprintf(g_ventoy_theme_path, sizeof(g_ventoy_theme_path), "%s", pThemePath[mod]);        
+    }
+    else
+    {        
+        debug("random theme %s\n", pThemePath[mod]);
+        grub_env_set("theme", pThemePath[mod]);
+    }
+    g_ventoy_menu_refresh = 1;
 
 end:
 
+    grub_check_free(pThemePath);
     VENTOY_CMD_RETURN(GRUB_ERR_NONE);
 }
 
-extern char g_ventoy_theme_path[256];
 grub_err_t ventoy_cmd_set_theme_path(grub_extcmd_context_t ctxt, int argc, char **args)
 {
     (void)argc;
@@ -3466,4 +3530,128 @@ grub_err_t ventoy_cmd_set_theme_path(grub_extcmd_context_t ctxt, int argc, char 
 
     VENTOY_CMD_RETURN(GRUB_ERR_NONE);
 }
+
+const char *ventoy_get_vmenu_title(const char *vMenu)
+{
+    return vtoy_json_get_string_ex(g_menu_lang_json->pstChild, vMenu);
+}
+
+int ventoy_plugin_load_menu_lang(int init, const char *lang)
+{
+    int ret = 1;
+    grub_file_t file = NULL;
+    char *buf = NULL;
+
+    if (grub_strcmp(lang, g_cur_menu_language) == 0)
+    {
+        debug("Same menu lang %s\n", lang);
+        return 0;
+    }
+    grub_snprintf(g_cur_menu_language, sizeof(g_cur_menu_language), "%s", lang);
+
+    debug("Load menu lang %s\n", g_cur_menu_language);
+
+    if (g_menu_lang_json)
+    {
+        vtoy_json_destroy(g_menu_lang_json);
+        g_menu_lang_json = NULL;
+    }
+
+    g_menu_lang_json = vtoy_json_create();
+    if (!g_menu_lang_json)
+    {
+        goto end;
+    }
+
+    file = ventoy_grub_file_open(GRUB_FILE_TYPE_LINUX_INITRD, "(vt_menu_tarfs)/menu/%s.json", lang);
+    if (!file)
+    {
+        goto end;
+    }
+
+    buf = grub_malloc(file->size + 1);
+    if (!buf)
+    {
+        grub_printf("Failed to malloc memory %lu.\n", (ulong)(file->size + 1));
+        goto end;
+    }
+
+    buf[file->size] = 0;
+    grub_file_read(file, buf, file->size);
+
+    vtoy_json_parse(g_menu_lang_json, buf);
+
+    if (g_default_menu_mode == 0)
+    {
+        grub_snprintf(g_ventoy_hotkey_tip, sizeof(g_ventoy_hotkey_tip), "%s", ventoy_get_vmenu_title("VTLANG_STR_HOTKEY_TREE"));
+    }
+    else
+    {
+        grub_snprintf(g_ventoy_hotkey_tip, sizeof(g_ventoy_hotkey_tip), "%s", ventoy_get_vmenu_title("VTLANG_STR_HOTKEY_LIST"));
+    }
+
+    if (init == 0)
+    {
+        ventoy_menu_push_key(GRUB_TERM_ESC);
+        ventoy_menu_push_key(GRUB_TERM_ESC);
+        g_ventoy_menu_refresh = 1;        
+    }
+    ret = 0;
+
+end:
+
+    check_free(file, grub_file_close);
+    grub_check_free(buf);
+
+    return ret;
+}
+
+grub_err_t ventoy_cmd_cur_menu_lang(grub_extcmd_context_t ctxt, int argc, char **args)
+{
+    (void)ctxt;
+    (void)argc;
+
+    if (argc > 0)
+    {
+        grub_env_set(args[0], g_cur_menu_language);
+    }
+    else
+    {
+        grub_printf("%s\n", g_cur_menu_language);
+        grub_printf("%s\n", g_ventoy_hotkey_tip);
+        grub_refresh();        
+    }
+
+    VENTOY_CMD_RETURN(0);
+}
+
+grub_err_t ventoy_cmd_push_menulang(grub_extcmd_context_t ctxt, int argc, char **args)
+{
+    (void)argc;
+    (void)ctxt;
+
+    if (g_push_menu_language[0] == 0)
+    {
+        grub_memcpy(g_push_menu_language, g_cur_menu_language, sizeof(g_push_menu_language));
+        ventoy_plugin_load_menu_lang(0, args[0]);
+    }
+
+    VENTOY_CMD_RETURN(0);
+}
+
+grub_err_t ventoy_cmd_pop_menulang(grub_extcmd_context_t ctxt, int argc, char **args)
+{
+    (void)argc;
+    (void)ctxt;
+    (void)args;
+
+    if (g_push_menu_language[0])
+    {
+        ventoy_plugin_load_menu_lang(0, g_push_menu_language);
+        g_push_menu_language[0] = 0;
+    }
+
+    VENTOY_CMD_RETURN(0);
+}
+
 

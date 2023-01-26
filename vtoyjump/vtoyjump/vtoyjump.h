@@ -75,7 +75,9 @@ typedef struct ventoy_windows_data
 
     UINT32 auto_install_len;
     
-    UINT8 reserved[255 - 4];
+    UINT8 windows11_bypass_nro;
+
+    UINT8 reserved[255 - 5];
 
     /* auto install script file data ... + auto_install_len */
     /* ...... */
@@ -152,7 +154,6 @@ typedef struct VTOY_GPT_INFO
 #pragma pack()
 
 
-
 typedef struct VarDiskInfo
 {
     UINT64 Capacity;
@@ -165,6 +166,13 @@ typedef struct VarDiskInfo
     CHAR SerialNumber[128];
 }VarDiskInfo;
 
+typedef struct IsoId
+{
+    CHAR SystemId[64];
+    CHAR VolumeId[64];
+    CHAR PulisherId[256];
+    CHAR PreparerId[256];
+}IsoId;
 
 #define SAFE_CLOSE_HANDLE(handle) \
 {\
@@ -186,5 +194,10 @@ int unxz(unsigned char *in, int in_size,
     int(*flush)(void *src, unsigned int size),
     unsigned char *out, int *in_used,
     void(*error)(char *x));
+
+void Log(const char* Fmt, ...);
+int SetupMonNroStart(const char* isopath);
+BOOL IsFileExist(const char* Fmt, ...);
+BOOL IsDirExist(const char* Fmt, ...);
 
 #endif

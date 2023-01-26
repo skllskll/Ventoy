@@ -88,6 +88,30 @@ tar czf help.tar.gz ./help/
 rm -rf ./help
 cd ../../
 
+#tar menu txt & update menulang.cfg
+cd $tmpmnt/grub/
+
+vtlangtitle=$(grep VTLANG_LANGUAGE_NAME menu/zh_CN.json | awk -F\" '{print $4}')
+echo "menuentry \"zh_CN  -  $vtlangtitle\" --class=menu_lang_item --class=debug_menu_lang --class=F5tool {" >> menulang.cfg
+echo "    vt_load_menu_lang zh_CN"  >> menulang.cfg
+echo "}"  >> menulang.cfg
+
+ls -1 menu/ | grep -v 'zh_CN' | sort | while read vtlang; do
+    vtlangname=${vtlang%.*}
+    vtlangtitle=$(grep VTLANG_LANGUAGE_NAME menu/$vtlang | awk -F\" '{print $4}')
+    echo "menuentry \"$vtlangname  -  $vtlangtitle\" --class=menu_lang_item --class=debug_menu_lang --class=F5tool {" >> menulang.cfg
+    echo "    vt_load_menu_lang $vtlangname"  >> menulang.cfg
+    echo "}"  >> menulang.cfg
+done
+echo "menuentry \"\$VTLANG_RETURN_PREVIOUS\" --class=vtoyret VTOY_RET {" >> menulang.cfg
+echo "        echo \"Return ...\"" >> menulang.cfg
+echo "}" >> menulang.cfg
+
+tar czf menu.tar.gz ./menu/
+rm -rf ./menu
+cd ../../
+
+
 
 cp $OPT ./ventoy   $tmpmnt/
 cp $OPT ./EFI   $tmpmnt/
@@ -145,7 +169,26 @@ sed 's/.*SCRIPT_DEL_THIS \(.*\)/\1/g' -i $tmpdir/WebUI/index.html
 
 #32MB disk img
 dd status=none if=$LOOP of=$tmpdir/ventoy/ventoy.disk.img bs=512 count=$VENTOY_SECTOR_NUM skip=$part2_start_sector
+
+
+#4k image
+# echo "make 4K img ..."
+# dd status=none if=/dev/zero of=$tmpdir/ventoy/ventoy_4k.disk.img bs=1M count=32
+# mkfs.vfat -F 16 -n VTOYEFI -s 1 -S 4096 $tmpdir/ventoy/ventoy_4k.disk.img
+# vDIR1=$(mktemp -d)
+# vDIR2=$(mktemp -d)
+# mount $tmpdir/ventoy/ventoy.disk.img $vDIR1
+# mount $tmpdir/ventoy/ventoy_4k.disk.img $vDIR2
+# cp -a $vDIR1/* $vDIR2/
+# umount $vDIR1
+# umount $vDIR2
+# rm -rf $vDIR1 $vDIR2
+
+# xz --check=crc32 $tmpdir/ventoy/ventoy_4k.disk.img
+
 xz --check=crc32 $tmpdir/ventoy/ventoy.disk.img
+
+
 
 losetup -d $LOOP && rm -f img.bin
 
@@ -202,6 +245,7 @@ cp $OPT VentoyVlnk.exe $tmpdir/
 cp $OPT FOR_X64_ARM.txt $tmpdir/
 mkdir -p $tmpdir/altexe
 cp $OPT Ventoy2Disk_*.exe $tmpdir/altexe/
+cp $OPT VentoyPlugson_*.exe $tmpdir/altexe/
 
 
 

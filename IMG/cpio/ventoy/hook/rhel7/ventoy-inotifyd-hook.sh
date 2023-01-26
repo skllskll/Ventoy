@@ -50,7 +50,11 @@ if is_inotify_ventoy_part $3; then
         vtScript=$($GREP -m1 'RUN.=' $vtGenRulFile | $AWK -F'RUN.=' '{print $2}' | $SED 's/"\(.*\)".*/\1/')
         vtlog "vtScript=$vtScript"
         
-        if $GREP -q SCRE /proc/cmdline; then
+        if [ -f $VTOY_PATH/distmagic/SCRE ]; then
+            /sbin/dmsquash-live-root /dev/ventoy
+        elif [ -f $VTOY_PATH/distmagic/DELL_PER ]; then
+            sed 's/liverw=[^ ]*/liverw=ro/g' -i /sbin/dmsquash-live-root
+            sed 's/writable_fsimg=[^ ]*/writable_fsimg=""/g' -i /sbin/dmsquash-live-root
             /sbin/dmsquash-live-root /dev/ventoy
         else
             $vtScript
@@ -70,6 +74,9 @@ if is_inotify_ventoy_part $3; then
     
     if [ -e /sbin/anaconda-diskroot ]; then
         vtlog "set anaconda-diskroot ..."        
+
+        #busybox cp doesn't support -t option (issue 1900)
+        /bin/cp -a /bin/cp $BUSYBOX_PATH/cp
         /sbin/anaconda-diskroot /dev/ventoy
     fi
     

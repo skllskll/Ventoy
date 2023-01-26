@@ -115,6 +115,92 @@ int ventoy_str_all_digit(const char *str)
     return 1;
 }
 
+int ventoy_str_all_alnum(const char *str)
+{
+    if (NULL == str || 0 == *str)
+    {
+        return 0;
+    }
+
+    while (*str)
+    {
+        if (!grub_isalnum(*str))
+        {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+int ventoy_str_len_alnum(const char *str, int len)
+{
+    int i;
+    int slen;
+    
+    if (NULL == str || 0 == *str)
+    {
+        return 0;
+    }
+
+    slen = grub_strlen(str);
+    if (slen <= len)
+    {
+        return 0;
+    }
+
+    for (i = 0; i < len; i++)
+    {
+        if (!grub_isalnum(str[i]))
+        {
+            return 0;
+        }
+    }
+
+    if (str[len] == 0 || grub_isspace(str[len]))
+    {
+        return 1;
+    }
+
+    return 0;
+}
+
+char * ventoy_str_basename(char *path)
+{
+    char *pos = NULL;
+    
+    pos = grub_strrchr(path, '/');
+    if (pos)
+    {
+        pos++;
+    }
+    else
+    {
+        pos = path;
+    }
+
+    return pos;
+}
+
+int ventoy_str_chrcnt(const char *str, char c)
+{
+    int n = 0;
+    
+    if (str)
+    {
+        while (*str)
+        {
+            if (*str == c)
+            {
+                n++;                
+            }
+            str++;
+        }        
+    }
+
+    return n;
+}
+
 int ventoy_strcmp(const char *pattern, const char *str)
 {
     while (*pattern && *str)
@@ -144,6 +230,14 @@ int ventoy_strncmp (const char *pattern, const char *str, grub_size_t n)
     }
 
     return (int)(grub_uint8_t)*pattern - (int)(grub_uint8_t)*str;
+}
+
+grub_err_t ventoy_env_int_set(const char *name, int value)
+{
+    char buf[16];
+    
+    grub_snprintf(buf, sizeof(buf), "%d", value);
+    return grub_env_set(name, buf);
 }
 
 void ventoy_debug_dump_guid(const char *prefix, grub_uint8_t *guid)
@@ -188,6 +282,21 @@ void * ventoy_alloc_chain(grub_size_t size)
     return p;
 }
 
+void ventoy_memfile_env_set(const char *prefix, const void *buf, unsigned long long len)
+{
+    char name[128];
+    char val[64];
+
+    grub_snprintf(name, sizeof(name), "%s_addr", prefix);
+    grub_snprintf(val, sizeof(val), "0x%llx", (ulonglong)(ulong)buf);
+    grub_env_set(name, val);
+    
+    grub_snprintf(name, sizeof(name), "%s_size", prefix);
+    grub_snprintf(val, sizeof(val), "%llu", len);
+    grub_env_set(name, val);
+
+    return;
+}
 
 static int ventoy_arch_mode_init(void)
 {
@@ -254,12 +363,130 @@ static int ventoy_hwinfo_init(void)
 
     grub_snprintf(str, sizeof(str), "%ld", (long)(total_mem / VTOY_SIZE_1MB));
     ventoy_env_export("grub_total_ram", str);
-    
+
 #ifdef GRUB_MACHINE_EFI
     ventoy_get_uefi_version(str, sizeof(str));
     ventoy_env_export("grub_uefi_version", str);
+#else
+    ventoy_env_export("grub_uefi_version", "NA");
 #endif
-    
+
+    return 0;
+}
+
+static global_var_cfg g_global_vars[] = 
+{
+    { "gfxmode",            "1024x768",   NULL },
+    { ventoy_left_key,      "5%",         NULL },
+    { ventoy_top_key,       "95%",        NULL },
+    { ventoy_color_key,     "#0000ff",    NULL },
+    { NULL,                 NULL,         NULL }
+};
+
+static const char * ventoy_global_var_read_hook(struct grub_env_var *var, const char *val)
+{
+    int i;
+
+    for (i = 0; g_global_vars[i].name; i++)
+    {
+        if (grub_strcmp(g_global_vars[i].name, var->name) == 0)
+        {
+            return g_global_vars[i].value;
+        }
+    }
+
+    return val;
+}
+
+static char * ventoy_global_var_write_hook(struct grub_env_var *var, const char *val)
+{
+    int i;
+
+    for (i = 0; g_global_vars[i].name; i++)
+    {
+        if (grub_strcmp(g_global_vars[i].name, var->name) == 0)
+        {
+            grub_check_free(g_global_vars[i].value);
+            g_global_vars[i].value = grub_strdup(val);
+            break;
+        }
+    }
+
+    return grub_strdup(val);
+}
+
+int ventoy_global_var_init(void)
+{
+    int i;
+
+    for (i = 0; g_global_vars[i].name; i++)
+    {
+        g_global_vars[i].value = grub_strdup(g_global_vars[i].defval);
+        ventoy_env_export(g_global_vars[i].name, g_global_vars[i].defval);        
+        grub_register_variable_hook(g_global_vars[i].name, ventoy_global_var_read_hook, ventoy_global_var_write_hook);
+    }
+
+    return 0;
+}
+
+static ctrl_var_cfg g_ctrl_vars[] = 
+{
+    { "VTOY_WIN11_BYPASS_CHECK",  1 },
+    { "VTOY_WIN11_BYPASS_NRO",    1 },
+    { "VTOY_LINUX_REMOUNT",       0 },
+    { "VTOY_SECONDARY_BOOT_MENU", 1 },
+    { NULL, 0 }
+};
+
+static const char * ventoy_ctrl_var_read_hook(struct grub_env_var *var, const char *val)
+{
+    int i;
+
+    for (i = 0; g_ctrl_vars[i].name; i++)
+    {
+        if (grub_strcmp(g_ctrl_vars[i].name, var->name) == 0)
+        {
+            return g_ctrl_vars[i].value ? "1" : "0";
+        }
+    }
+
+    return val;
+}
+
+static char * ventoy_ctrl_var_write_hook(struct grub_env_var *var, const char *val)
+{
+    int i;
+
+    for (i = 0; g_ctrl_vars[i].name; i++)
+    {
+        if (grub_strcmp(g_ctrl_vars[i].name, var->name) == 0)
+        {
+            if (val && val[0] == '1' && val[1] == 0)
+            {
+                g_ctrl_vars[i].value = 1;
+                return grub_strdup("1");
+            }
+            else
+            {
+                g_ctrl_vars[i].value = 0;
+                return grub_strdup("0");
+            }
+        }
+    }
+
+    return grub_strdup(val);
+}
+
+int ventoy_ctrl_var_init(void)
+{
+    int i;
+
+    for (i = 0; g_ctrl_vars[i].name; i++)
+    {
+        ventoy_env_export(g_ctrl_vars[i].name, g_ctrl_vars[i].value ? "1" : "0");
+        grub_register_variable_hook(g_ctrl_vars[i].name, ventoy_ctrl_var_read_hook, ventoy_ctrl_var_write_hook);
+    }
+
     return 0;
 }
 
