@@ -51,7 +51,9 @@ typedef struct ko_param
     unsigned long sym_get_size;
     unsigned long sym_put_addr;
     unsigned long sym_put_size;
-    unsigned long padding[3];
+    unsigned long kv_major;
+    unsigned long ibt;
+    unsigned long padding[1];
 }ko_param;
 
 #pragma pack()
@@ -69,16 +71,72 @@ static volatile ko_param g_ko_param =
 };
 
 #if defined(CONFIG_X86_64)
-#define PATCH_OP_POS    3
-#define CODE_MATCH(code, i) \
+#define PATCH_OP_POS1    3
+#define CODE_MATCH1(code, i) \
     (code[i] == 0x40 && code[i + 1] == 0x80 && code[i + 2] == 0xce && code[i + 3] == 0x80)
+
+#define PATCH_OP_POS2    1
+#define CODE_MATCH2(code, i) \
+    (code[i] == 0x0C && code[i + 1] == 0x80 && code[i + 2] == 0x89 && code[i + 3] == 0xC6)
+
 #elif defined(CONFIG_X86_32)
-#define PATCH_OP_POS    2
-#define CODE_MATCH(code, i) \
+#define PATCH_OP_POS1    2
+#define CODE_MATCH1(code, i) \
     (code[i] == 0x80 && code[i + 1] == 0xca && code[i + 2] == 0x80 && code[i + 3] == 0xe8)
+
+#define PATCH_OP_POS2    2
+#define CODE_MATCH2(code, i) \
+    (code[i] == 0x80 && code[i + 1] == 0xca && code[i + 2] == 0x80 && code[i + 3] == 0xe8)
+
 #else
 #error "unsupported arch"
 #endif
+
+#ifdef VTOY_IBT
+#ifdef CONFIG_X86_64
+/* Using 64-bit values saves one instruction clearing the high half of low */
+#define DECLARE_ARGS(val, low, high)	unsigned long low, high
+#define EAX_EDX_VAL(val, low, high)	((low) | (high) << 32)
+#define EAX_EDX_RET(val, low, high)	"=a" (low), "=d" (high)
+#else
+#define DECLARE_ARGS(val, low, high)	unsigned long long val
+#define EAX_EDX_VAL(val, low, high)	(val)
+#define EAX_EDX_RET(val, low, high)	"=A" (val)
+#endif
+
+#define	EX_TYPE_WRMSR			 8
+#define	EX_TYPE_RDMSR			 9
+#define MSR_IA32_S_CET			0x000006a2 /* kernel mode cet */
+#define CET_ENDBR_EN			(1ULL << 2)
+
+/* Exception table entry */
+#ifdef __ASSEMBLY__
+
+#define _ASM_EXTABLE_TYPE(from, to, type)			\
+	.pushsection "__ex_table","a" ;				\
+	.balign 4 ;						\
+	.long (from) - . ;					\
+	.long (to) - . ;					\
+	.long type ;						\
+	.popsection
+
+#else /* ! __ASSEMBLY__ */
+
+#define _ASM_EXTABLE_TYPE(from, to, type)			\
+	" .pushsection \"__ex_table\",\"a\"\n"			\
+	" .balign 4\n"						\
+	" .long (" #from ") - .\n"				\
+	" .long (" #to ") - .\n"				\
+	" .long " __stringify(type) " \n"			\
+	" .popsection\n"
+
+#endif /* __ASSEMBLY__ */
+#endif /* VTOY_IBT */
+
+
+
+
+
 
 #define vdebug(fmt, args...) if(kprintf) kprintf(KERN_ERR fmt, ##args)
 
@@ -100,6 +158,7 @@ static void notrace dmpatch_restore_code(unsigned char *opCode)
 
 static int notrace dmpatch_replace_code
 (
+    int style,
     unsigned long addr, 
     unsigned long size, 
     int expect, 
@@ -112,14 +171,25 @@ static int notrace dmpatch_replace_code
     unsigned long align;
     unsigned char *opCode = (unsigned char *)addr;
 
-    vdebug("patch for %s 0x%lx %d\n", desc, addr, (int)size);
+    vdebug("patch for %s style[%d] 0x%lx %d\n", desc, style, addr, (int)size);
 
     for (i = 0; i < (int)size - 4; i++)
     {
-        if (CODE_MATCH(opCode, i) && cnt < MAX_PATCH)
+        if (style == 1)
         {
-            patch[cnt] = opCode + i + PATCH_OP_POS;
-            cnt++;
+            if (CODE_MATCH1(opCode, i) && cnt < MAX_PATCH)
+            {
+                patch[cnt] = opCode + i + PATCH_OP_POS1;
+                cnt++;
+            }
+        }
+        else
+        {
+            if (CODE_MATCH2(opCode, i) && cnt < MAX_PATCH)
+            {
+                patch[cnt] = opCode + i + PATCH_OP_POS2;
+                cnt++;
+            }
         }
     }
 
@@ -143,11 +213,66 @@ static int notrace dmpatch_replace_code
     return 0;
 }
 
+#ifdef VTOY_IBT
+static __always_inline unsigned long long dmpatch_rdmsr(unsigned int msr)
+{
+	DECLARE_ARGS(val, low, high);
+
+	asm volatile("1: rdmsr\n"
+		     "2:\n"
+		     _ASM_EXTABLE_TYPE(1b, 2b, EX_TYPE_RDMSR)
+		     : EAX_EDX_RET(val, low, high) : "c" (msr));
+
+	return EAX_EDX_VAL(val, low, high);
+}
+
+static __always_inline void dmpatch_wrmsr(unsigned int msr, u32 low, u32 high)
+{
+	asm volatile("1: wrmsr\n"
+		     "2:\n"
+		     _ASM_EXTABLE_TYPE(1b, 2b, EX_TYPE_WRMSR)
+		     : : "c" (msr), "a"(low), "d" (high) : "memory");
+}
+
+static u64 dmpatch_ibt_save(void)
+{
+    u64 msr = 0;
+    u64 val = 0;
+
+    msr = dmpatch_rdmsr(MSR_IA32_S_CET);
+    val = msr & ~CET_ENDBR_EN;
+    dmpatch_wrmsr(MSR_IA32_S_CET, (u32)(val & 0xffffffffULL), (u32)(val >> 32));
+
+    return msr;
+}
+
+static void dmpatch_ibt_restore(u64 save)
+{
+	u64 msr;
+
+    msr = dmpatch_rdmsr(MSR_IA32_S_CET);
+
+	msr &= ~CET_ENDBR_EN;
+	msr |= (save & CET_ENDBR_EN);
+
+    dmpatch_wrmsr(MSR_IA32_S_CET, (u32)(msr & 0xffffffffULL), (u32)(msr >> 32));
+}
+#else
+static u64 dmpatch_ibt_save(void) { return 0; }
+static void dmpatch_ibt_restore(u64 save) { (void)save; }
+#endif
+
 static int notrace dmpatch_init(void)
 {
     int r = 0;
     int rc = 0;
-
+    u64 msr = 0;
+    
+    if (g_ko_param.ibt == 0x8888)
+    {
+        msr = dmpatch_ibt_save();
+    }
+    
     kprintf = (printk_pf)(g_ko_param.printk_addr); 
 
     vdebug("dmpatch_init start pagesize=%lu ...\n", g_ko_param.pgsize);
@@ -169,7 +294,13 @@ static int notrace dmpatch_init(void)
     reg_kprobe = (kprobe_reg_pf)g_ko_param.reg_kprobe_addr;
     unreg_kprobe = (kprobe_unreg_pf)g_ko_param.unreg_kprobe_addr;
 
-    r = dmpatch_replace_code(g_ko_param.sym_get_addr, g_ko_param.sym_get_size, 2, "dm_get_table_device", g_get_patch);
+    r = dmpatch_replace_code(1, g_ko_param.sym_get_addr, g_ko_param.sym_get_size, 2, "dm_get_table_device", g_get_patch);
+    if (r && g_ko_param.kv_major >= 5)
+    {
+        vdebug("new patch dm_get_table_device...\n");
+        r = dmpatch_replace_code(2, g_ko_param.sym_get_addr, g_ko_param.sym_get_size, 1, "dm_get_table_device", g_get_patch);
+    }
+    
     if (r)
     {
         rc = -EINVAL;
@@ -177,7 +308,7 @@ static int notrace dmpatch_init(void)
     }
     vdebug("patch dm_get_table_device success\n");
 
-    r = dmpatch_replace_code(g_ko_param.sym_put_addr, g_ko_param.sym_put_size, 1, "dm_put_table_device", g_put_patch);
+    r = dmpatch_replace_code(1, g_ko_param.sym_put_addr, g_ko_param.sym_put_size, 1, "dm_put_table_device", g_put_patch);
     if (r)
     {
         rc = -EINVAL;
@@ -189,6 +320,11 @@ static int notrace dmpatch_init(void)
     vdebug("######## dm patch success ###########\n");
     vdebug("#####################################\n");
 
+    if (g_ko_param.ibt == 0x8888)
+    {
+        dmpatch_ibt_restore(msr);
+    }
+
 out:
 
 	return rc;
@@ -197,6 +333,12 @@ out:
 static void notrace dmpatch_exit(void)
 {
     int i = 0;
+    u64 msr;
+
+    if (g_ko_param.ibt == 0x8888)
+    {
+        msr = dmpatch_ibt_save();
+    }
 
     for (i = 0; i < MAX_PATCH; i++)
     {
@@ -205,6 +347,11 @@ static void notrace dmpatch_exit(void)
     }
 
     vdebug("dmpatch_exit success\n");
+
+    if (g_ko_param.ibt == 0x8888)
+    {
+        dmpatch_ibt_restore(msr);
+    }
 }
 
 module_init(dmpatch_init);

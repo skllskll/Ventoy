@@ -223,6 +223,42 @@ ventoy_check_dm_module() {
     fi
 }
 
+ventoy_need_proc_ibt() {
+    vtKv=$($BUSYBOX_PATH/uname -r)
+    vtMajor=$(echo $vtKv | $AWK -F. '{print $1}')
+    vtMinor=$(echo $vtKv | $AWK -F. '{print $2}')
+    
+    #ibt was supported since linux kernel 5.18
+    if [ $vtMajor -lt 5 ]; then
+        $BUSYBOX_PATH/false; return
+    elif [ $vtMajor -eq 5 ]; then
+        if [ $vtMajor -lt 18 ]; then
+            $BUSYBOX_PATH/false; return
+        fi
+    fi
+    
+    if $GREP -q ' ibt=off' /proc/cmdline; then
+        $BUSYBOX_PATH/false; return
+    fi
+
+    #hardware CPU doesn't support IBT
+    if $VTOY_PATH/tool/vtoykmod -I; then
+        :
+    else
+        $BUSYBOX_PATH/false; return
+    fi
+    
+    #dot.CONFIG not enabled
+    if $GREP -q ' ibt_restore$' /proc/kallsyms; then
+        :
+    else
+        $BUSYBOX_PATH/false; return
+    fi
+    
+    $BUSYBOX_PATH/true
+}
+
+
 ventoy_need_dm_patch() {
     if [ "$VTOY_LINUX_REMOUNT" != "01" ]; then
         if $GREP -q 'VTOY_LINUX_REMOUNT=1' /proc/cmdline; then
@@ -269,6 +305,16 @@ ventoy_dm_patch() {
         return
     fi
 
+    if ventoy_need_proc_ibt; then
+        vtlog "need to proc IBT"
+        vtKoName=dm_patch_ibt_64.ko
+        vtIBT='0x8888'
+    else
+        vtlog "NO need to proc IBT"
+        vtIBT='0'
+    fi 
+
+
     if [ -f $VTOY_PATH/tool/$vtKoName ]; then
         vtlog "/ventoy/tool/$vtKoName exist OK"
     else
@@ -305,6 +351,9 @@ ventoy_dm_patch() {
     
     if [ "$VTOY_DEBUG_LEVEL" = "01" ]; then
         printk_addr=$($GREP ' printk$' /proc/kallsyms | $AWK '{print $1}')
+        if [ -z "$printk_addr" ]; then
+            printk_addr=$($GREP ' _printk$' /proc/kallsyms | $AWK '{print $1}')
+        fi
         vtDebug="-v"
     else
         printk_addr=0
@@ -361,14 +410,16 @@ ventoy_dm_patch() {
         return
     fi
     
+       
+    
     #step1: modify vermagic/mod crc/relocation
     vtlog "$VTOY_PATH/tool/vtoykmod -u $VTOY_PATH/tool/$vtKoName $VTOY_PATH/$vtModName $vtDebug"
     $VTOY_PATH/tool/vtoykmod -u $VTOY_PATH/tool/$vtKoName $VTOY_PATH/$vtModName $vtDebug
     
     #step2: fill parameters
     vtPgsize=$($VTOY_PATH/tool/vtoyksym -p)
-    vtlog "$VTOY_PATH/tool/vtoykmod -f $VTOY_PATH/tool/$vtKoName $vtPgsize 0x$printk_addr 0x$ro_addr 0x$rw_addr $get_addr $get_size $put_addr $put_size 0x$kprobe_reg_addr 0x$kprobe_unreg_addr $vtDebug"
-    $VTOY_PATH/tool/vtoykmod -f $VTOY_PATH/tool/$vtKoName $vtPgsize 0x$printk_addr 0x$ro_addr 0x$rw_addr $get_addr $get_size $put_addr $put_size 0x$kprobe_reg_addr 0x$kprobe_unreg_addr $vtDebug
+    vtlog "$VTOY_PATH/tool/vtoykmod -f $VTOY_PATH/tool/$vtKoName $vtPgsize 0x$printk_addr 0x$ro_addr 0x$rw_addr $get_addr $get_size $put_addr $put_size 0x$kprobe_reg_addr 0x$kprobe_unreg_addr $vtKv $vtIBT $vtDebug"
+    $VTOY_PATH/tool/vtoykmod -f $VTOY_PATH/tool/$vtKoName $vtPgsize 0x$printk_addr 0x$ro_addr 0x$rw_addr $get_addr $get_size $put_addr $put_size 0x$kprobe_reg_addr 0x$kprobe_unreg_addr $vtKv $vtIBT $vtDebug
 
     $BUSYBOX_PATH/insmod $VTOY_PATH/tool/$vtKoName
     

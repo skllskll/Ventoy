@@ -27,6 +27,7 @@
 #include <grub/fshelp.h>
 #include <grub/deflate.h>
 #include <minilzo.h>
+#include <zstd.h>
 
 #include "xz.h"
 #include "xz_stream.h"
@@ -184,6 +185,7 @@ enum
     COMPRESSION_LZO = 3,
     COMPRESSION_XZ = 4,
     COMPRESSION_LZ4 = 5,
+    COMPRESSION_ZSTD = 6,
   };
 
 
@@ -398,6 +400,25 @@ static grub_ssize_t lz4_decompress_wrap(char *inbuf, grub_size_t insize, grub_of
   return len;
 }
 
+static grub_ssize_t zstd_decompress_wrap(char *inbuf, grub_size_t insize, grub_off_t off, 
+    char *outbuf, grub_size_t len, struct grub_squash_data *data)
+{
+  char *udata = NULL;
+  int usize = data->blksz;
+  if (usize < 8192)
+    usize = 8192;
+
+  udata = grub_malloc (usize);
+  if (!udata)
+    return -1;
+  
+  ZSTD_decompress(udata, usize, inbuf, insize);      
+  grub_memcpy(outbuf, udata + off, len);
+  grub_free(udata);
+  
+  return len;
+}
+
 static struct grub_squash_data *
 squash_mount (grub_disk_t disk)
 {
@@ -446,6 +467,9 @@ squash_mount (grub_disk_t disk)
       break;
     case grub_cpu_to_le16_compile_time (COMPRESSION_LZ4):
       data->decompress = lz4_decompress_wrap;
+      break;
+    case grub_cpu_to_le16_compile_time (COMPRESSION_ZSTD):
+      data->decompress = zstd_decompress_wrap;
       break;
     case grub_cpu_to_le16_compile_time (COMPRESSION_XZ):
       data->decompress = xz_decompress;
@@ -519,7 +543,7 @@ grub_squash_iterate_dir (grub_fshelp_node_t dir,
       break;
     case grub_cpu_to_le16_compile_time (SQUASH_TYPE_LONG_DIR):
       off = grub_le_to_cpu16 (dir->ino.long_dir.offset);
-      endoff = grub_le_to_cpu16 (dir->ino.long_dir.size) + off - 3;
+      endoff = grub_le_to_cpu32 (dir->ino.long_dir.size) + off - 3;
       chunk = grub_le_to_cpu32 (dir->ino.long_dir.chunk);
       break;
     default:

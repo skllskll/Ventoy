@@ -19,22 +19,22 @@
 
 . /ventoy/hook/ventoy-hook-lib.sh
 
-vtlog "##### $0 $* ..."
+vtlog "####### $0 $* ########"
 
 VTPATH_OLD=$PATH; PATH=$BUSYBOX_PATH:$VTOY_PATH/tool:$PATH
 
-if [ -f /ventoy/vtoy_iso_scan ]; then
-    repopath=$(cat /ventoy/vtoy_iso_scan)
-    repodev=$(vtoydump -f /ventoy/ventoy_os_param | awk -F'#' '{print $1}')
-    if echo $repodev | egrep -q "nvme|mmc|nbd"; then
-        vtpart1=${repodev}p1
-    else
-        vtpart1=${repodev}1
-    fi
-    echo "inst.repo=hd:${vtpart1}:${repopath}" >> /sysroot/etc/cmdline
-else
-    repodev=$(ls $VTOY_PATH/dev_backup*)
-    echo "inst.repo=hd:/dev/${repodev#*dev_backup_}" >> /sysroot/etc/cmdline
+wait_for_usb_disk_ready
+
+vtdiskname=$(get_ventoy_disk_name)
+if [ "$vtdiskname" = "unknown" ]; then
+    vtlog "ventoy disk not found"
+    PATH=$VTPATH_OLD
+    exit 0
 fi
 
-PATH=$VTPATH_OLD
+vtlog "${vtdiskname#/dev/}2 found..."
+$BUSYBOX_PATH/sh $VTOY_PATH/hook/debian/udev_disk_hook.sh "${vtdiskname#/dev/}2"
+
+if [ -f /ventoy/autoinstall ]; then
+    sh /ventoy/hook/default/auto_install_varexp.sh  /ventoy/autoinstall
+fi
